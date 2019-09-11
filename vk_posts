@@ -1,0 +1,80 @@
+import pandas as pd
+import numpy as np
+import requests
+import warnings
+warnings.filterwarnings("ignore")
+import vk
+from datetime import datetime
+import time
+
+token = '...................' # Сервисный ключ доступа
+session = vk.Session(access_token = token)
+api = vk.API(session)
+
+#club_ids = pd.read_excel('vk_id_group.xlsx')
+#club_ids = club_ids.ID.to_list()
+#club_ids = [ str(i) for i in club_ids]
+
+club_ids = ['73411051', '68439997', '75237138', '78976569', '68439997' , '124491947'] # 78976569 and 124491947 - заблочены
+
+full_posts = pd.DataFrame()
+
+
+def post_add_to_frame(post, club_id, post_data = {}, full_posts=full_posts):
+    '''Приходит по 1 посту в виде словаря, его раскладываем по нужным ключам и делаем строчку pandas, 
+       которая возвращается и добавляется в конец таблицы posts(все посты определенного сообщества, по определенную дату)'''
+    post_data['post_id'] = [post['id']]
+    post_data['club_id'] = [club_id]
+    post_data['post_url'] = 'https://vk.com/wall-{}_{}'.format(club_id, post['id'])
+    post_data['text'] = post['text']
+    post_data['datetime(GTM+0)'] = pd.Timestamp(post['date'], unit='s')
+    
+    try:
+        post_data['count_attach'] = len(post['attachments']) # количество вложений, если их нет, то ловится ошибка
+        foto_urls_in_VK = ''
+        foto_urls_out_VK = ''
+        for i in range(post_data['count_attach']):
+            if post['attachments'][i]['type'] == 'photo':
+                photo_id_in_VK = post['attachments'][i]['photo']['id']
+                foto_urls_in_VK += 'https://vk.com/photo-{}_{} '.format(club_id, photo_id_in_VK) # ссылки в VK на фотки поста через пробел
+                foto_urls_out_VK += post['attachments'][i]['photo']['sizes'][-1]['url'] + ' '
+        post_data['foto_urls_in_VK'] = foto_urls_in_VK
+        post_data['foto_urls_out_VK'] = foto_urls_out_VK
+        
+    except:
+        post_data['count_attach'] = [0]
+        post_data['foto_urls_in_VK'] = ''
+        post_data['foto_urls_out_VK'] = ''
+    return pd.DataFrame(post_data)
+
+
+
+counter = 0 # счетчик запросов к api
+
+for club_id in club_ids:
+    stop_date = pd.Timestamp('2019-09-09 00:00:00') # дата, после которой новые посты не нужны (вытаскивать из таблицы прошлой выборки - последний пост этого сообщества)
+    posts = pd.DataFrame() # будут копиться посты сообщества под номером club_id, пока min дата новых постов не будет больше stop_date
+    offset = 0 # отступ постов
+    frontier_date = True # определяет останавливать ли сбор постов в данном сообществе, зависит от даты и кол-ва выборок(по 100 постов)
+    
+    try:
+        while frontier_date:
+            counter += 1 # счетчик запросов к api
+            club_posts = api.wall.get(domain=club_id, v=5.101, filter='all', offset=offset, count=100, owner_id=-int(club_id))['items'] #  сбор 100 постов
+            for post in club_posts:
+                '''Отправка по 1 посту в функцию post_add_to_frame для разложения и преобразования в DataFrame'''
+                posts = posts.append(post_add_to_frame(post, club_id))
+            if (posts.iloc[-10:]['datetime(GTM+0)'].min() < stop_date) or (offset >= 1000):
+                '''если минимальная дата последних 10 постов из этой выборки меньше, 
+                   чем stop_date или кол-во выборок по данному сообществу более 10(можно увеличить), то останавливаем парсинг этой группы'''
+                frontier_date = False
+            offset += 100 # увеличиваем отступ 
+        full_posts = full_posts.append(posts[posts['datetime(GTM+0)'] > stop_date])
+        time.sleep(0.2)
+    except:
+        print('Parcing Error: https://vk.com/club{}'.format(club_id))
+
+
+print('Произведено запросов api: {} из возможных 5000 в день!'.format(counter))
+
+full_posts.to_excel('posts.xlsx')
